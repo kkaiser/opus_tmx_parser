@@ -4,12 +4,13 @@ Fetch [OPUS](http://opus.nlpl.eu/) corpora for various language pairs. The libra
 
 ## Quickstart
 
-Build a Docker image after installing [Docker](https://www.docker.com/products/docker-desktop) for your platform.
+Clone the repository and build a Docker image after installing [Docker](https://www.docker.com/products/docker-desktop) for your platform.
 ```
+cd opus_tmx_parser
 docker build -t opus_tmx_parser .
 ```
 
-Simply run the prebuilt Docker image with the options for source (`-s`) and target (`-t`) language:
+Simply run the built Docker image with the options for source (`-s`) and target (`-t`) language:
 ```
 docker run -v ~/data_host:/data/ opus_tmx_parser -s en -t lv
 ```
@@ -57,11 +58,11 @@ A sample output of running the script with docker `docker run -v ~/data_host:/da
 2020-05-21 18:32:12,146 INFO: (opus_tmx_parser.py:230) Writing 119,003 lines of language pairs.
 ```
 Explanation:
-* The script has 2 mandatory arguments for source and target language. OPUS releases several corpora by default I use ParaCrawl but with another option
-* The script uses the OPUS API to verift that the corpus exists and that the corpus offers the specified languages. If not the script will log an error.
+* The script has 2 mandatory arguments for source and target language. OPUS releases several corpora by default I use ParaCrawl but with the `-c` option other corpora can be picked.
+* The script uses the OPUS API to verify that the corpus exists and that the corpus offers the specified languages. If not the script will log an error.
 * If the (sometimes very large) TMX data is not already downloaded it will be fetched with [python-requests](https://requests.readthedocs.io/en/master/). The progress of the download is logged with [tqdm](https://github.com/tqdm/tqdm).
 * Since the data can be very large it is best not to read to whole file into memory but except use an xml library with streaming functionality like [xmltodict](https://github.com/martinblech/xmltodict) that processes the file iteratively.
-* The output can also be written iteratively to keep the memory footprint small and appending to the output files line by line. Therefore you see the script occassionally logging how many lines have been written.
+* The output can also be written iteratively to keep the memory footprint small by appending to the output files line by line. Therefore you see the script occassionally logging how many lines have been written.
 
 Additional remarks:
 * There is an [issue in xmltodict](https://github.com/martinblech/xmltodict/issues/88) that talks about making the streaming mode more pythonic with a generator. It would have been a nicer approach than using a callback function because it would avoid the global variable `_LANGUAGE_PAIRS` that was used.
