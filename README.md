@@ -25,7 +25,13 @@ rake setup:install
 ## Run
 The standard corpus (controlled with `-c` option) is ParaCrawl. To get a list of available corpora check: http://opus.nlpl.eu/opusapi/?corpora=True
 ```
-./opus_tmx_parser.py -s en -t lt
+./opus_tmx_parser.py -s lt -t en
+```
+
+If you want to get data for all corpora us the `-a` this will ignore the `-c` parameter. The target language `-t` is per default English (en).
+
+```
+./opus_tmx_parser.py -t lt -a
 ```
 
 ## Development
@@ -44,7 +50,7 @@ rake dev:clean
 
 ## Notes
 
-A sample output of running the script with docker `docker run -v ~/data_host:/data/ opus_tmx_parser -s en -t lv`. 
+A sample output of running the script with docker `docker run -v ~/data_host:/data/ opus_tmx_parser -s en -t lv`.
 ```
 2020-05-21 18:27:40,577 INFO: (opus_tmx_parser.py:260) No TMX file /data/en-lv.tmx.gz for input languages en-lv found.
 2020-05-21 18:27:41,190 INFO: (opus_tmx_parser.py:108) Corpus information [{'alignment_pairs': 1019003, 'corpus': 'ParaCrawl', 'documents': 21, 'id': 264034, 'latest': 'True', 'preprocessing': 'tmx', 'size': 292192, 'source': 'en', 'source_tokens': 26868814, 'target': 'lv', 'target_tokens': 24032548, 'url': 'https://object.pouta.csc.fi/OPUS-ParaCrawl/v5/tmx/en-lv.tmx.gz', 'version': 'v5'}]
