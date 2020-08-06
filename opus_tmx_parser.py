@@ -24,6 +24,7 @@ _DATA_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data')
 _LANGUAGE_PAIRS = []
 _LINES_LEFT = 0
 
+
 def _clean_line(text):
     return text.replace('\n', ' ').strip()
 
