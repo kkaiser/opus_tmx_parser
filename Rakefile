@@ -15,7 +15,7 @@ namespace :dev do
   desc 'Run linter'
   task :lint do
     sh 'flake8 --show-source --ignore=D10,W503 *.py'
-    sh 'isort --recursive --check-only --diff --multi-line=5 --trailing-comma .'
+    sh 'isort --check-only --diff --multi-line=5 --trailing-comma .'
   end
 
   desc 'Clean environment'
