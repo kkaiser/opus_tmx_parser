@@ -6,9 +6,11 @@
 import gzip
 import logging
 import os
+import unicodedata
 from argparse import ArgumentParser
-from functools import partial
+from functools import lru_cache, partial
 
+import cld3
 import requests
 import xmltodict
 from tqdm import tqdm
@@ -17,12 +19,38 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s: (%(filename)s:%(lineno)d) %(message)s',
     level=logging.INFO,
 )
-_LOGGER = logging.getLogger()
+LOGGER = logging.getLogger()
 
-_OPUS_API_URL = 'http://opus.nlpl.eu/opusapi/'
-_DATA_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data')
-_LANGUAGE_PAIRS = []
-_LINES_LEFT = 0
+DATA_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data')
+
+# https://github.com/google/cld3/blob/master/src/task_context_params.cc#L43
+CLD3_LANG_CODES = {
+    'eo', 'co', 'eu', 'ta', 'de', 'mt', 'ps', 'te', 'su', 'uz', 'zh-Latn',
+    'ne', 'nl', 'sw', 'sq', 'hmn', 'ja', 'no', 'mn', 'so', 'ko', 'kk', 'sl',
+    'ig', 'mr', 'th', 'zu', 'ml', 'hr', 'bs', 'lo', 'sd', 'cy', 'hy', 'uk',
+    'pt', 'lv', 'iw', 'cs', 'vi', 'jv', 'be', 'km', 'mk', 'tr', 'fy', 'am',
+    'zh', 'da', 'sv', 'fi', 'ht', 'af', 'la', 'id', 'fil', 'sm', 'ca', 'el',
+    'ka', 'sr', 'it', 'sk', 'ru', 'ru-Latn', 'bg', 'ny', 'fa', 'haw', 'gl',
+    'et', 'ms', 'gd', 'bg-Latn', 'ha', 'is', 'ur', 'mi', 'hi', 'bn', 'hi-Latn',
+    'fr', 'yi', 'hu', 'xh', 'my', 'tg', 'ro', 'ar', 'lb', 'el-Latn', 'st',
+    'ceb', 'kn', 'az', 'si', 'ky', 'mg', 'en', 'gu', 'es', 'pl', 'ja-Latn',
+    'ga', 'lt', 'sn', 'yo', 'pa', 'ku',
+}
+OPUS_API_URL = 'http://opus.nlpl.eu/opusapi/'
+
+LANGUAGE_PAIRS = []
+# this is necessary because of bad design of xmltodict
+# see https://github.com/martinblech/xmltodict/issues/88
+LINES_LEFT = 0
+MAX_NONALPHA_RATIO = .1
+
+
+def _alphabet(text):
+    for ch in text:
+        if unicodedata.category(ch) in ['Lu', 'Ll', 'Lo']:
+            char_name = unicodedata.name(ch, None)
+            if char_name is not None:
+                return char_name.split()[0]
 
 
 def _clean_line(text):
@@ -38,26 +66,26 @@ def _fetch_and_write_tmx_file(corpus, source_lang, target_lang, tmx_fname):
         'version': 'latest',
     }
 
-    rsp = requests.get(_OPUS_API_URL, params=payload)
+    rsp = requests.get(OPUS_API_URL, params=payload)
     if _is_bad_response(rsp):
         return False
 
     json_rsp = rsp.json()
     corpus = json_rsp.get('corpora', [])
     if not corpus:
-        _LOGGER.error(f'Bad response on {rsp.url} - unknown JSON {json_rsp}')
+        LOGGER.error(f'Bad response on {rsp.url} - unknown JSON {json_rsp}')
         return False
 
-    _LOGGER.info(f'Corpus information {corpus}')
+    LOGGER.info(f'Corpus information {corpus}')
 
     # there is only one TMX version
     # alternatives only exist for XML
     tmx_url = corpus[0].get('url')
     if not tmx_url:
-        _LOGGER.error(f'Bad response on {rsp.url} - no TMX url {corpus[0]}')
+        LOGGER.error(f'Bad response on {rsp.url} - no TMX url {corpus[0]}')
         return False
 
-    _LOGGER.info(f'Fetching TMX file from {tmx_url}')
+    LOGGER.info(f'Fetching TMX file from {tmx_url}')
     tmx_rsp = requests.get(tmx_url, stream=True)
     if _is_bad_response(tmx_rsp):
         return False
@@ -73,7 +101,7 @@ def _fetch_and_write_tmx_file(corpus, source_lang, target_lang, tmx_fname):
 
     progr.close()
     if total_size != 0 and progr.n != total_size:
-        _LOGGER.error(
+        LOGGER.error(
             f"Couldn't write full TMX file {tmx_fname} from URL {tmx_rsp.url}",
         )
         return False
@@ -87,6 +115,7 @@ def _fetch_corpus(
     target_fname,
     source_lang,
     target_lang,
+    lang_data_dir,
     line_write_len,
 ):
     if not _requested_corpus_exists(corpus):
@@ -95,14 +124,11 @@ def _fetch_corpus(
     if not _requested_languages_exist(corpus, source_lang, target_lang):
         return
 
-    if not os.path.isdir(_DATA_DIR):
-        os.mkdir(_DATA_DIR)
-
     tmx_fname = os.path.join(
-        _DATA_DIR, f'{corpus}-{source_lang}_{target_lang}.tmx.gz',
+        lang_data_dir, f'{corpus}-{source_lang}_{target_lang}.tmx.gz',
     )
     if not os.path.isfile(tmx_fname):
-        _LOGGER.info(
+        LOGGER.info(
             f'No TMX file {tmx_fname} for input languages '
             f'{source_lang}-{target_lang} found.',
         )
@@ -110,7 +136,7 @@ def _fetch_corpus(
         if not _fetch_and_write_tmx_file(
             corpus, source_lang, target_lang, tmx_fname,
         ):
-            _LOGGER.error(
+            LOGGER.error(
                 f'TMX file could not be fetched and saved as {tmx_fname}',
             )
             return
@@ -120,9 +146,9 @@ def _fetch_corpus(
         source_fname, source_lang, target_fname, target_lang, line_write_len,
     )
 
-    _LOGGER.info(
+    LOGGER.info(
         f'Processing {corpus} from {tmx_fname}\n'
-        f'writing {_LINES_LEFT:,} lines in {line_write_len:,} chunks\n'
+        f'writing {LINES_LEFT:,} lines in {line_write_len:,} chunks\n'
         f'to {target_fname} and {source_fname}',
     )
 
@@ -146,14 +172,14 @@ def _fetch_corpora(source_lang, target_lang):
         'version': 'latest',
     }
 
-    rsp = requests.get(_OPUS_API_URL, params=payload)
+    rsp = requests.get(OPUS_API_URL, params=payload)
     if _is_bad_response(rsp):
         return False
 
     json_rsp = rsp.json()
     corpora = json_rsp.get('corpora', [])
     if not corpora:
-        _LOGGER.error(f'Bad response on {rsp.url} - unknown JSON {json_rsp}')
+        LOGGER.error(f'Bad response on {rsp.url} - unknown JSON {json_rsp}')
         return False
 
     return [
@@ -233,7 +259,7 @@ def _get_args():
 
 def _is_bad_response(rsp):
     if not rsp.ok:
-        _LOGGER.error(f"rsp.status couldn't fetch URL {rsp.url}")
+        LOGGER.error(f"rsp.status couldn't fetch URL {rsp.url}")
         return True
 
     return False
@@ -248,28 +274,34 @@ def _parse_language_pairs(
     path,
     tree_dict,
 ):
-    global _LINES_LEFT
-    if _LINES_LEFT <= 0:
+    global LINES_LEFT
+    if LINES_LEFT <= 0:
         return
 
     language_pair = {}
     for elem in tree_dict['tuv']:
         language_pair[elem['@xml:lang']] = elem['seg']
 
-    if all(lang in language_pair for lang in (source_lang, target_lang)):
-        _LANGUAGE_PAIRS.append(language_pair)
+    if all(
+        _validate_sentence(language_pair.get(lang, ''), lang)
+        for lang in (source_lang, target_lang)
+    ):
+        LANGUAGE_PAIRS.append(language_pair)
 
     else:
-        _LOGGER.debug(
-            f"Ignoring tu ID {path[2][1].get('tuid')} "
-            f'with missing language {source_lang} or {target_lang}',
-        )
+        try:
+            LOGGER.debug(
+                f"Ignoring tu ID {path[2][1].get('tuid')} "
+                f'with missing language {source_lang} or {target_lang}',
+            )
+        except (IndexError, AttributeError):
+            pass
 
     if (
-        len(_LANGUAGE_PAIRS) != 0
+        len(LANGUAGE_PAIRS) != 0
         and (
-            len(_LANGUAGE_PAIRS) % line_write_len == 0
-            or len(_LANGUAGE_PAIRS) >= _LINES_LEFT
+            len(LANGUAGE_PAIRS) % line_write_len == 0
+            or len(LANGUAGE_PAIRS) >= LINES_LEFT
         )
     ):
         _write_language_pairs(
@@ -283,13 +315,13 @@ def _requested_corpus_exists(corpus):
     payload = {
         'corpora': 'True',
     }
-    rsp = requests.get(_OPUS_API_URL, params=payload)
+    rsp = requests.get(OPUS_API_URL, params=payload)
     if _is_bad_response(rsp):
         return False
 
     opus_corpora = rsp.json().get('corpora', [])
     if corpus not in opus_corpora:
-        _LOGGER.error(f'Bad corpus "{corpus}" must be one in {opus_corpora}')
+        LOGGER.error(f'Bad corpus "{corpus}" must be one in {opus_corpora}')
         return False
 
     return True
@@ -300,13 +332,13 @@ def _requested_languages_exist(corpus, source_lang, target_lang):
         'languages': 'True',
         'corpus': corpus,
     }
-    rsp = requests.get(_OPUS_API_URL, params=payload_source_check)
+    rsp = requests.get(OPUS_API_URL, params=payload_source_check)
     if _is_bad_response(rsp):
         return False
 
     source_languages = rsp.json().get('languages', [])
     if source_lang not in source_languages:
-        _LOGGER.error(
+        LOGGER.error(
             f'Bad source language "{source_lang}" '
             f'must be one in {source_languages} for corpus {corpus}',
         )
@@ -317,13 +349,13 @@ def _requested_languages_exist(corpus, source_lang, target_lang):
         'corpus': corpus,
         'source': source_lang,
     }
-    rsp = requests.get(_OPUS_API_URL, params=payload_target_check)
+    rsp = requests.get(OPUS_API_URL, params=payload_target_check)
     if _is_bad_response(rsp):
         return False
 
     target_languages = rsp.json().get('languages', [])
     if target_lang not in target_languages:
-        _LOGGER.error(
+        LOGGER.error(
             f'Bad target language "{target_lang}" '
             f'must be one in {target_languages} for corpus {corpus}',
         )
@@ -332,46 +364,92 @@ def _requested_languages_exist(corpus, source_lang, target_lang):
     return True
 
 
+@lru_cache(maxsize=128)
+def _validate_language(text, language):
+    if language not in CLD3_LANG_CODES:
+        return True
+
+    lang_res = cld3.get_language(text)
+    if lang_res.is_reliable and lang_res.language == language:
+        return True
+
+    return False
+
+
+def _validate_sentence(text, language):
+    if (
+        _alphabet(text) != 'LATIN'
+        or not _validate_language(text, language)
+    ):
+        return False
+
+    nonalpha_count = sum(
+        1 for c in text if not (c.isalpha() or c.isspace())
+    )
+
+    return nonalpha_count / len(text) < MAX_NONALPHA_RATIO
+
+
 def _write_language_pairs(
     source_fname, source_lang, target_fname, target_lang,
 ):
-    global _LINES_LEFT
-    if _LINES_LEFT <= 0:
+    global LINES_LEFT
+    if LINES_LEFT <= 0:
         return
 
-    _LOGGER.info(
-        f'Writing {len(_LANGUAGE_PAIRS):,} lines of language pairs '
-        f'{source_lang}-{target_lang} lines left to write: {_LINES_LEFT}',
+    LOGGER.info(
+        f'Writing {len(LANGUAGE_PAIRS):,} lines of language pairs '
+        f'{source_lang}-{target_lang} lines left to write: {LINES_LEFT}',
     )
 
     with open(source_fname, 'at') as s_fp, open(target_fname, 'at') as t_fp:
-        for language_pair in _LANGUAGE_PAIRS:
-            if _LINES_LEFT <= 0:
+        for language_pair in LANGUAGE_PAIRS:
+            if LINES_LEFT <= 0:
                 break
 
             s_fp.write(_clean_line(language_pair[source_lang]) + '\n')
             t_fp.write(_clean_line(language_pair[target_lang]) + '\n')
-            _LINES_LEFT -= 1
+            LINES_LEFT -= 1
 
     # clean list to save memory
-    del _LANGUAGE_PAIRS[:]
+    del LANGUAGE_PAIRS[:]
 
 
 def main():
     args = _get_args()
 
-    global _LINES_LEFT
-    _LINES_LEFT = args.max_lines
+    global LINES_LEFT
+    LINES_LEFT = args.max_lines
 
-    source_fname = os.path.join(_DATA_DIR, f'{args.source_language_code}.txt')
-    target_fname = os.path.join(_DATA_DIR, f'{args.target_language_code}.txt')
+    for lang_type, lang_code in {
+        'source': args.source_language_code,
+        'target': args.target_language_code,
+    }.items():
+        if lang_code not in CLD3_LANG_CODES:
+            LOGGER.warning(
+                f'TMX files for {lang_type} language {lang_code} '
+                "can't be validated with cld2 language detector",
+            )
+
+    lang_data_dir = os.path.join(
+        DATA_DIR, f'{args.source_language_code}_{args.target_language_code}',
+    )
+    if not os.path.isdir(lang_data_dir):
+        os.makedirs(lang_data_dir)
+
+    source_fname = os.path.join(
+        lang_data_dir, f'{args.source_language_code}.txt',
+    )
+    target_fname = os.path.join(
+        lang_data_dir, f'{args.target_language_code}.txt',
+    )
     if args.keep_former_output_files:
-        _LOGGER.info(
+        LOGGER.info(
             f'Appending to exisiting files {target_fname} and {source_fname}',
         )
 
     else:
-        _LOGGER.info(
+        LOGGER.info(
             f'Deleting pre-exisiting files {source_fname} and {target_fname}',
         )
 
@@ -387,18 +465,18 @@ def main():
             args.source_language_code, args.target_language_code,
         )
         if not corpora:
-            _LOGGER.error(
+            LOGGER.error(
                 f'No corpora for language pair {args.source_language_code}-'
                 f'{args.target_language_code}',
             )
             return
 
-        lines_per_corpus = int(_LINES_LEFT / len(corpora))
+        lines_per_corpus = int(LINES_LEFT / len(corpora))
         for corpus in corpora:
             if lines_per_corpus > 0:
-                _LINES_LEFT = lines_per_corpus
+                LINES_LEFT = lines_per_corpus
             else:
-                _LINES_LEFT = args.max_lines
+                LINES_LEFT = args.max_lines
 
             _fetch_corpus(
                 corpus,
@@ -406,6 +484,7 @@ def main():
                 target_fname,
                 args.source_language_code,
                 args.target_language_code,
+                lang_data_dir,
                 args.line_write_len,
             )
 
@@ -416,6 +495,7 @@ def main():
             target_fname,
             args.source_language_code,
             args.target_language_code,
+            lang_data_dir,
             args.line_write_len,
         )
 

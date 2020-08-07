@@ -18,6 +18,7 @@ pep8
 pep8-naming
 
 # app
+pycld3
 requests
 tqdm
 xmltodict
